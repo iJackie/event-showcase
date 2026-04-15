@@ -16,16 +16,18 @@ interface Props {
 
 // Pre-build location groups once (pure computation, safe at module scope)
 const locationGroups = buildLocationGroups(EVENTS);
-const eventGroupKey: Record<string, ReturnType<typeof buildLocationGroups>[string]> = {};
-Object.values(locationGroups).forEach(g => {
-  g.ids.forEach(id => { eventGroupKey[id] = g; });
-});
 
 export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, onEventHover }: Props) {
   const mapRef = useRef<ReturnType<typeof import('leaflet')['map']> | null>(null);
   const markersRef = useRef<Record<string, ReturnType<typeof import('leaflet')['marker']>>>({});
   const panTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const iconUrlsRef = useRef<Record<string, string | null>>({});
+
+  // Keep callback refs so marker listeners always call the latest version
+  const onEventClickRef = useRef(onEventClick);
+  const onEventHoverRef = useRef(onEventHover);
+  useEffect(() => { onEventClickRef.current = onEventClick; }, [onEventClick]);
+  useEffect(() => { onEventHoverRef.current = onEventHover; }, [onEventHover]);
 
   // Initialize map
   useEffect(() => {
@@ -217,16 +219,16 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
           if (!bubbleEl) return;
 
           bubbleEl.addEventListener('mouseenter', () => {
-            onEventHover(id);
+            onEventHoverRef.current(id);
           });
 
           bubbleEl.addEventListener('mouseleave', () => {
-            onEventHover(null);
+            onEventHoverRef.current(null);
           });
 
           bubbleEl.addEventListener('click', (e) => {
             e.stopPropagation();
-            onEventClick(evData);
+            onEventClickRef.current(evData);
           });
         });
       });
