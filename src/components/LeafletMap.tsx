@@ -24,7 +24,7 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
   const activeEventRef = useRef<Event | null>(null);
   const iconUrlsRef = useRef<Record<string, string | null>>({});
 
-  // Always-current callback refs — safe to call from Leaflet DOM listeners
+  // Always-current callback refs — safe to call from any Leaflet DOM listener
   const onEventClickRef = useRef(onEventClick);
   const onEventHoverRef = useRef(onEventHover);
   useEffect(() => { onEventClickRef.current = onEventClick; }, [onEventClick]);
@@ -54,10 +54,36 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
 
     mapRef.current = map;
 
-    // Step 1: build all markers immediately with emoji (synchronous, listeners attached)
-    buildAllMarkers(map, L);
+    // Use layeradd to wire listeners the moment each marker hits the DOM
+    map.on('layeradd', (e: { layer: unknown }) => {
+      const layer = e.layer as ReturnType<typeof L.marker>;
+      if (!layer.getElement) return; // not a marker
+      const wrapper = layer.getElement();
+      if (!wrapper) return;
 
-    // Step 2: resolve photos async, then upgrade emoji → image in live DOM
+      // Find which group this marker belongs to
+      const group = Object.values(locationGroups).find(g =>
+        g.ids.some(id => markersRef.current[id] === layer)
+      );
+      if (!group) return;
+
+      L.DomEvent.disableClickPropagation(wrapper);
+      L.DomEvent.disableScrollPropagation(wrapper);
+
+      group.ids.forEach(id => {
+        const evData = EVENTS.find(e => e.id === id)!;
+        const bubble = wrapper.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
+        if (!bubble) return;
+        bubble.addEventListener('mouseenter', () => onEventHoverRef.current(id));
+        bubble.addEventListener('mouseleave', () => onEventHoverRef.current(null));
+        bubble.addEventListener('click', ev => {
+          ev.stopPropagation();
+          onEventClickRef.current(evData);
+        });
+      });
+    });
+
+    buildAllMarkers(map, L);
     resolveAllIcons().then(() => upgradeMarkerIcons());
 
     return () => {
@@ -96,11 +122,11 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
   // ── MARKER HIGHLIGHT SYNC ───────────────────────────────────────────────────
   useEffect(() => {
     Object.keys(markersRef.current).forEach(id => {
-      const el = getMarkerBubble(id);
-      if (!el) return;
+      const bubble = getMarkerBubble(id);
+      if (!bubble) return;
       const isActive = id === hoveredEventId || id === activeEvent?.id;
-      el.classList.toggle('highlighted', isActive);
-      const pulse = el.querySelector('.marker-pulse') as HTMLElement | null;
+      bubble.classList.toggle('highlighted', isActive);
+      const pulse = bubble.querySelector('.marker-pulse') as HTMLElement | null;
       if (pulse) pulse.style.display = isActive ? 'block' : 'none';
     });
   }, [hoveredEventId, activeEvent]);
@@ -124,7 +150,6 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
       dateEl.textContent = formatDateRange(ev.startDate, ev.endDate);
       tooltip.classList.remove('hidden');
     } else {
-      // Linger 1.5 s before hiding
       tooltipTimeoutRef.current = setTimeout(() => {
         tooltip.classList.add('hidden');
       }, 1500);
@@ -156,7 +181,7 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
       const bubble = getMarkerBubble(ev.id);
       if (!bubble) return;
       const span = bubble.querySelector('.event-marker-emoji');
-      if (!span) return; // already upgraded
+      if (!span) return;
       const img = document.createElement('img');
       img.src = url;
       img.alt = ev.name;
@@ -175,7 +200,6 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
       const n = ids.length;
       const SIZE = 160;
 
-      // Build the HTML string for divIcon
       let html = `<div class="marker-group-container" style="position:relative;width:${SIZE}px;height:${SIZE}px;pointer-events:none;">`;
 
       if (n > 1) {
@@ -187,22 +211,7 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
         const size = n === 1 ? 48 : 38;
         const { dx, dy } = fanOffset(i, n);
         const fontSize = n === 1 ? '1.4rem' : '1.1rem';
-        html += `
-          <div
-            class="event-marker"
-            data-event-id="${id}"
-            style="
-              width:${size}px;height:${size}px;
-              background:${ev.color}22;border-color:${ev.color}88;
-              position:absolute;left:50%;top:50%;
-              transform:translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px));
-              pointer-events:all;
-              transition:transform 0.35s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.2s,border-color 0.2s;
-            "
-          >
-            <span class="event-marker-emoji" style="font-size:${fontSize};">${ev.emoji}</span>
-            <div class="marker-pulse" style="width:${size}px;height:${size}px;display:none;"></div>
-          </div>`;
+        html += `<div class="event-marker" data-event-id="${id}" style="width:${size}px;height:${size}px;background:${ev.color}22;border-color:${ev.color}88;position:absolute;left:50%;top:50%;transform:translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px));pointer-events:all;transition:transform 0.35s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.2s,border-color 0.2s;"><span class="event-marker-emoji" style="font-size:${fontSize};">${ev.emoji}</span><div class="marker-pulse" style="width:${size}px;height:${size}px;display:none;"></div></div>`;
       });
 
       html += '</div>';
@@ -214,30 +223,8 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
         iconAnchor: [SIZE / 2, SIZE / 2],
       });
 
+      // addTo triggers 'layeradd' on map → listeners wired there
       const marker = L.marker([centerLat, centerLng], { icon, interactive: true }).addTo(map);
-
-      // Attach listeners — use requestAnimationFrame to guarantee DOM is painted
-      requestAnimationFrame(() => {
-        const wrapper = marker.getElement();
-        if (!wrapper) return;
-
-        L.DomEvent.disableClickPropagation(wrapper);
-        L.DomEvent.disableScrollPropagation(wrapper);
-
-        ids.forEach(id => {
-          const evData = EVENTS.find(e => e.id === id)!;
-          const bubble = wrapper.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
-          if (!bubble) return;
-
-          bubble.addEventListener('mouseenter', () => onEventHoverRef.current(id));
-          bubble.addEventListener('mouseleave', () => onEventHoverRef.current(null));
-          bubble.addEventListener('click', e => {
-            e.stopPropagation();
-            onEventClickRef.current(evData);
-          });
-        });
-      });
-
       ids.forEach(id => { markersRef.current[id] = marker; });
     });
   }
