@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Event } from '@/lib/types';
-import { formatDateRange } from '@/lib/photoUtils';
+import { formatDateRange, resolvePhotoUrl } from '@/lib/photoUtils';
 import PhotoFilmstrip from './PhotoFilmstrip';
 
 interface Props {
@@ -13,8 +13,21 @@ interface Props {
 
 export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
   const panelRef = useRef<HTMLDivElement>(null);
+  const [iconUrl, setIconUrl] = useState<string | null>(null);
 
-  // Scroll panel to top when event changes
+  // Resolve icon for the panel header
+  useEffect(() => {
+    if (!event) { setIconUrl(null); return; }
+    if (event.icon) { setIconUrl(event.icon); return; }
+    const firstPhoto = event.photos?.find(p => p);
+    if (firstPhoto) {
+      resolvePhotoUrl(firstPhoto).then(setIconUrl);
+    } else {
+      setIconUrl(null);
+    }
+  }, [event?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Scroll to top when event changes
   useEffect(() => {
     if (event && panelRef.current) {
       panelRef.current.scrollTop = 0;
@@ -30,13 +43,11 @@ export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
     return () => document.removeEventListener('keydown', handleKey);
   }, [event, onClose]);
 
-  const isOpen = !!event;
-
   return (
     <div
       id="right-panel"
       ref={panelRef}
-      className={isOpen ? 'open' : ''}
+      className={event ? 'open' : ''}
     >
       <button id="close-panel" onClick={onClose} aria-label="Close panel">×</button>
 
@@ -45,10 +56,12 @@ export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
           {/* Header */}
           <div id="panel-header">
             <div id="panel-icon-wrap">
-              {/* Icon resolved in EventItem — use emoji fallback here */}
-              <span style={{ fontSize: '1.8rem' }}>{event.emoji}</span>
+              {iconUrl
+                ? <img id="panel-icon" src={iconUrl} alt={event.name} style={{ display: 'block' }} />
+                : <span style={{ fontSize: '1.8rem' }}>{event.emoji}</span>
+              }
             </div>
-            <div>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div id="panel-name">{event.name}</div>
               <div id="panel-location-date">
                 📍 {event.location}{event.venue ? ` · ${event.venue}` : ''} ·{' '}
@@ -67,7 +80,7 @@ export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
           {event.stats && event.stats.length > 0 && (
             <div className="panel-section" id="panel-stats-section">
               <h3>Highlights</h3>
-              <div className="stats-grid" id="panel-stats">
+              <div className="stats-grid">
                 {event.stats.map((s, i) => (
                   <div key={i} className="stat-card">
                     <div className="stat-value">{s.value}</div>
@@ -94,7 +107,7 @@ export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
           {event.merch && event.merch.length > 0 && (
             <div className="panel-section" id="panel-merch-section">
               <h3>Merch</h3>
-              <div className="merch-grid" id="panel-merch">
+              <div className="merch-grid">
                 {event.merch.map((m, i) => (
                   <a
                     key={i}
@@ -119,7 +132,7 @@ export default function DetailPanel({ event, onClose, onOpenLightbox }: Props) {
           {event.links && event.links.length > 0 && (
             <div className="panel-section" id="panel-links-section">
               <h3>Links</h3>
-              <div className="links-list" id="panel-links">
+              <div className="links-list">
                 {event.links.map((l, i) => (
                   <a
                     key={i}

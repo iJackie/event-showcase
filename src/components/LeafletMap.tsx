@@ -64,18 +64,21 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pan to active event
+  // Pan to active event (triggered by both sidebar and map marker clicks)
   useEffect(() => {
     if (!activeEvent || !mapRef.current) return;
     const map = mapRef.current;
     clearTimeout(panTimeoutRef.current ?? undefined);
     panTimeoutRef.current = setTimeout(() => {
       map.flyTo([activeEvent.lat, activeEvent.lng], 10, { animate: true, duration: 1.4, easeLinearity: 0.25 });
+      // Invalidate size after panel slides in so tiles fill correctly
+      setTimeout(() => map.invalidateSize(), 400);
     }, 80);
-  }, [activeEvent]);
+  }, [activeEvent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Pan to hovered event
   useEffect(() => {
+    if (activeEvent) return; // don't fight with active-event pan
     if (!hoveredEventId || !mapRef.current) return;
     const ev = EVENTS.find(e => e.id === hoveredEventId);
     if (!ev) return;
@@ -84,7 +87,7 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
     panTimeoutRef.current = setTimeout(() => {
       map.flyTo([ev.lat, ev.lng], 10, { animate: true, duration: 1.4, easeLinearity: 0.25 });
     }, 80);
-  }, [hoveredEventId]);
+  }, [hoveredEventId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync highlighted markers when hoveredEventId changes
   useEffect(() => {
