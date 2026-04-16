@@ -21,19 +21,19 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
   const markersRef = useRef<Record<string, ReturnType<typeof import('leaflet')['marker']>>>({});
   const panTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const iconUrlsRef = useRef<Record<string, string | null>>({});
   const activeEventRef = useRef<Event | null>(null);
+  const iconUrlsRef = useRef<Record<string, string | null>>({});
 
-  // Always-current callback refs
+  // Always-current callback refs — safe to call from Leaflet DOM listeners
   const onEventClickRef = useRef(onEventClick);
   const onEventHoverRef = useRef(onEventHover);
   useEffect(() => { onEventClickRef.current = onEventClick; }, [onEventClick]);
   useEffect(() => { onEventHoverRef.current = onEventHover; }, [onEventHover]);
   useEffect(() => { activeEventRef.current = activeEvent; }, [activeEvent]);
 
-  // Initialize map once
+  // ── INIT MAP ────────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (mapRef.current) return;
+    if (mapRef.current) return; // StrictMode guard
 
     const L = require('leaflet') as typeof import('leaflet');
 
@@ -54,28 +54,33 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
 
     mapRef.current = map;
 
-    // Build markers immediately with emoji fallbacks, then upgrade icons async
+    // Step 1: build all markers immediately with emoji (synchronous, listeners attached)
     buildAllMarkers(map, L);
+
+    // Step 2: resolve photos async, then upgrade emoji → image in live DOM
     resolveAllIcons().then(() => upgradeMarkerIcons());
 
     return () => {
       map.remove();
       mapRef.current = null;
+      markersRef.current = {};
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Pan + invalidate on active event change
+  // ── PAN ON ACTIVE EVENT ─────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeEvent || !mapRef.current) return;
     const map = mapRef.current;
     clearTimeout(panTimeoutRef.current ?? undefined);
     panTimeoutRef.current = setTimeout(() => {
-      map.flyTo([activeEvent.lat, activeEvent.lng], 10, { animate: true, duration: 1.4, easeLinearity: 0.25 });
+      map.flyTo([activeEvent.lat, activeEvent.lng], 10, {
+        animate: true, duration: 1.4, easeLinearity: 0.25,
+      });
       setTimeout(() => map.invalidateSize(), 420);
     }, 60);
   }, [activeEvent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Hover pan (only when no panel open)
+  // ── PAN ON HOVER (only when no panel open) ──────────────────────────────────
   useEffect(() => {
     if (activeEventRef.current) return;
     if (!hoveredEventId || !mapRef.current) return;
@@ -88,54 +93,52 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
     }, 80);
   }, [hoveredEventId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync marker highlight styles
+  // ── MARKER HIGHLIGHT SYNC ───────────────────────────────────────────────────
   useEffect(() => {
     Object.keys(markersRef.current).forEach(id => {
-      const el = getMarkerEl(id);
+      const el = getMarkerBubble(id);
       if (!el) return;
-      if (id === hoveredEventId || id === activeEvent?.id) {
-        el.classList.add('highlighted');
-        const pulse = el.querySelector('.marker-pulse') as HTMLElement | null;
-        if (pulse) pulse.style.display = 'block';
-      } else {
-        el.classList.remove('highlighted');
-        const pulse = el.querySelector('.marker-pulse') as HTMLElement | null;
-        if (pulse) pulse.style.display = 'none';
-      }
+      const isActive = id === hoveredEventId || id === activeEvent?.id;
+      el.classList.toggle('highlighted', isActive);
+      const pulse = el.querySelector('.marker-pulse') as HTMLElement | null;
+      if (pulse) pulse.style.display = isActive ? 'block' : 'none';
     });
   }, [hoveredEventId, activeEvent]);
 
-  // Tooltip: show on hover, stay visible when event is active, hide with delay otherwise
+  // ── TOOLTIP ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     const tooltip = document.getElementById('map-tooltip');
-    const tooltipName = document.getElementById('tooltip-name');
-    const tooltipLoc = document.getElementById('tooltip-location');
-    const tooltipDate = document.getElementById('tooltip-date');
-    if (!tooltip || !tooltipName || !tooltipLoc || !tooltipDate) return;
+    const nameEl = document.getElementById('tooltip-name');
+    const locEl = document.getElementById('tooltip-location');
+    const dateEl = document.getElementById('tooltip-date');
+    if (!tooltip || !nameEl || !locEl || !dateEl) return;
 
     clearTimeout(tooltipTimeoutRef.current ?? undefined);
 
-    // Pick the event to display — prefer hovered, fall back to active
     const displayId = hoveredEventId ?? activeEvent?.id ?? null;
     const ev = displayId ? EVENTS.find(e => e.id === displayId) : null;
 
     if (ev) {
-      tooltipName.textContent = ev.name;
-      tooltipLoc.textContent = '📍 ' + ev.location + (ev.venue ? ' · ' + ev.venue : '');
-      tooltipDate.textContent = formatDateRange(ev.startDate, ev.endDate);
+      nameEl.textContent = ev.name;
+      locEl.textContent = '📍 ' + ev.location + (ev.venue ? ' · ' + ev.venue : '');
+      dateEl.textContent = formatDateRange(ev.startDate, ev.endDate);
       tooltip.classList.remove('hidden');
     } else {
-      // Delay hide so it doesn't flash away instantly
+      // Linger 1.5 s before hiding
       tooltipTimeoutRef.current = setTimeout(() => {
         tooltip.classList.add('hidden');
       }, 1500);
     }
   }, [hoveredEventId, activeEvent]);
 
-  function getMarkerEl(id: string): HTMLElement | null {
+  // ── HELPERS ─────────────────────────────────────────────────────────────────
+
+  function getMarkerBubble(id: string): HTMLElement | null {
     const marker = markersRef.current[id];
     if (!marker) return null;
-    return marker.getElement()?.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
+    const wrapper = marker.getElement();
+    if (!wrapper) return null;
+    return wrapper.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
   }
 
   async function resolveAllIcons() {
@@ -146,118 +149,96 @@ export default function LeafletMap({ activeEvent, hoveredEventId, onEventClick, 
     }));
   }
 
-  // After icons resolve, swap emoji spans for actual images in the live DOM
   function upgradeMarkerIcons() {
-    Object.keys(markersRef.current).forEach(id => {
-      const url = iconUrlsRef.current[id];
+    EVENTS.forEach(ev => {
+      const url = iconUrlsRef.current[ev.id];
       if (!url) return;
-      const el = getMarkerEl(id);
-      if (!el) return;
-      const span = el.querySelector('.event-marker-emoji');
-      if (!span) return; // already has image
+      const bubble = getMarkerBubble(ev.id);
+      if (!bubble) return;
+      const span = bubble.querySelector('.event-marker-emoji');
+      if (!span) return; // already upgraded
       const img = document.createElement('img');
       img.src = url;
-      img.alt = id;
+      img.alt = ev.name;
+      img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:50%;';
       span.replaceWith(img);
     });
   }
 
-  function buildAllMarkers(map: ReturnType<typeof import('leaflet')['map']>, L: typeof import('leaflet')) {
+  // ── BUILD MARKERS ────────────────────────────────────────────────────────────
+  function buildAllMarkers(
+    map: ReturnType<typeof import('leaflet')['map']>,
+    L: typeof import('leaflet')
+  ) {
     Object.values(locationGroups).forEach(group => {
       const { ids, centerLat, centerLng } = group;
       const n = ids.length;
-      const CONTAINER_SIZE = 160;
+      const SIZE = 160;
 
-      const container = document.createElement('div');
-      container.className = 'marker-group-container';
-      container.style.cssText = `position:relative;width:${CONTAINER_SIZE}px;height:${CONTAINER_SIZE}px;pointer-events:none;`;
+      // Build the HTML string for divIcon
+      let html = `<div class="marker-group-container" style="position:relative;width:${SIZE}px;height:${SIZE}px;pointer-events:none;">`;
 
       if (n > 1) {
-        const badge = document.createElement('div');
-        badge.className = 'marker-count-badge';
-        badge.textContent = `${n}`;
-        badge.style.cssText = `position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;`;
-        container.appendChild(badge);
+        html += `<div class="marker-count-badge" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;">${n}</div>`;
       }
 
       ids.forEach((id, i) => {
         const ev = EVENTS.find(e => e.id === id)!;
         const size = n === 1 ? 48 : 38;
-        const offset = fanOffset(i, n);
-
-        const bubble = document.createElement('div');
-        bubble.className = 'event-marker';
-        bubble.dataset.eventId = id;
-        bubble.style.cssText = `
-          width:${size}px;height:${size}px;
-          background:${ev.color}22;border-color:${ev.color}88;
-          position:absolute;left:50%;top:50%;
-          transform:translate(calc(-50% + ${offset.dx}px),calc(-50% + ${offset.dy}px));
-          pointer-events:all;
-          transition:transform 0.35s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.2s ease,border-color 0.2s ease;
-        `;
-
-        // Always start with emoji — upgradeMarkerIcons() replaces once images load
-        const span = document.createElement('span');
-        span.className = 'event-marker-emoji';
-        span.style.fontSize = n === 1 ? '1.4rem' : '1.1rem';
-        span.textContent = ev.emoji;
-        bubble.appendChild(span);
-
-        const pulse = document.createElement('div');
-        pulse.className = 'marker-pulse';
-        pulse.style.cssText = `width:${size}px;height:${size}px;display:none;`;
-        bubble.appendChild(pulse);
-
-        container.appendChild(bubble);
+        const { dx, dy } = fanOffset(i, n);
+        const fontSize = n === 1 ? '1.4rem' : '1.1rem';
+        html += `
+          <div
+            class="event-marker"
+            data-event-id="${id}"
+            style="
+              width:${size}px;height:${size}px;
+              background:${ev.color}22;border-color:${ev.color}88;
+              position:absolute;left:50%;top:50%;
+              transform:translate(calc(-50% + ${dx}px),calc(-50% + ${dy}px));
+              pointer-events:all;
+              transition:transform 0.35s cubic-bezier(0.34,1.56,0.64,1),box-shadow 0.2s,border-color 0.2s;
+            "
+          >
+            <span class="event-marker-emoji" style="font-size:${fontSize};">${ev.emoji}</span>
+            <div class="marker-pulse" style="width:${size}px;height:${size}px;display:none;"></div>
+          </div>`;
       });
 
+      html += '</div>';
+
       const icon = L.divIcon({
-        html: container.outerHTML,
+        html,
         className: '',
-        iconSize: [CONTAINER_SIZE, CONTAINER_SIZE],
-        iconAnchor: [CONTAINER_SIZE / 2, CONTAINER_SIZE / 2],
+        iconSize: [SIZE, SIZE],
+        iconAnchor: [SIZE / 2, SIZE / 2],
       });
 
       const marker = L.marker([centerLat, centerLng], { icon, interactive: true }).addTo(map);
 
-      // Wire listeners immediately after addTo — marker element exists in DOM now
-      const el = marker.getElement();
-      if (el) {
-        L.DomEvent.disableClickPropagation(el);
-        L.DomEvent.disableScrollPropagation(el);
-        attachBubbleListeners(el, ids, L);
-      } else {
-        // Fallback: element not yet in DOM, wait for next tick
-        setTimeout(() => {
-          const el2 = marker.getElement();
-          if (!el2) return;
-          L.DomEvent.disableClickPropagation(el2);
-          L.DomEvent.disableScrollPropagation(el2);
-          attachBubbleListeners(el2, ids, L);
-        }, 0);
-      }
+      // Attach listeners — use requestAnimationFrame to guarantee DOM is painted
+      requestAnimationFrame(() => {
+        const wrapper = marker.getElement();
+        if (!wrapper) return;
+
+        L.DomEvent.disableClickPropagation(wrapper);
+        L.DomEvent.disableScrollPropagation(wrapper);
+
+        ids.forEach(id => {
+          const evData = EVENTS.find(e => e.id === id)!;
+          const bubble = wrapper.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
+          if (!bubble) return;
+
+          bubble.addEventListener('mouseenter', () => onEventHoverRef.current(id));
+          bubble.addEventListener('mouseleave', () => onEventHoverRef.current(null));
+          bubble.addEventListener('click', e => {
+            e.stopPropagation();
+            onEventClickRef.current(evData);
+          });
+        });
+      });
 
       ids.forEach(id => { markersRef.current[id] = marker; });
-    });
-  }
-
-  function attachBubbleListeners(
-    el: HTMLElement,
-    ids: string[],
-    L: typeof import('leaflet')
-  ) {
-    ids.forEach(id => {
-      const evData = EVENTS.find(e => e.id === id)!;
-      const bubbleEl = el.querySelector(`.event-marker[data-event-id="${id}"]`) as HTMLElement | null;
-      if (!bubbleEl) return;
-
-      bubbleEl.addEventListener('mouseenter', () => onEventHoverRef.current(id));
-      bubbleEl.addEventListener('mouseleave', () => onEventHoverRef.current(null));
-      bubbleEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        onEventClickRef.current(evData);
-      });
     });
   }
 
